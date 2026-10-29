@@ -87,16 +87,6 @@ rmarkdown::render("kia_theft_final.Rmd")
 source("kia_theft_story.R")
 ```
 
-Scripts read the CSVs from the `data/` folder and write charts to `figures/`.
-
-## Ethical Considerations
-
-The project includes a full ethics write-up (`docs/`) covering data provenance,
-transformations, filtering disclosure, and risks such as copycat encouragement,
-brand stigmatization, the ecological fallacy, and correlation-vs-causation. All
-filters are labeled in chart titles or footnotes, and causal language is hedged
-("coinciding with" rather than "caused by").
-
 ## Tools
 
 R, ggplot2, base R graphics, R Markdown.
