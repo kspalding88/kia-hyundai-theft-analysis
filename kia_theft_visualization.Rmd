@@ -1,0 +1,1044 @@
+---
+title: "Kia/Hyundai Vehicle Theft Epidemic: A Data-Driven Narrative"
+subtitle: "Visualizing the Rise and Spread of the 'Kia Boyz' Trend (2019–2022)"
+author: "Data Visualization Project"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 7.5
+)
+```
+
+```{r packages}
+# Load required packages
+library(ggplot2)
+library(readxl)
+library(treemap)
+library(dplyr)
+library(tidyr)
+```
+
+```{r config}
+# Color palette - named vector for consistent mapping across all visualizations
+# Warm red for Kia/Hyundai (alarm/urgency), cool blue for other thefts (neutral contrast)
+kia_palette <- c(
+  "Kia/Hyundai" = "#E63946",
+  "Other Thefts" = "#457B9D"
+)
+
+# Shared ggplot2 theme for polished, consistent narrative visualizations
+# Enforces: title >= 14pt, subtitle >= 11pt, axis >= 9pt, minimal grid, bottom legend
+theme_kia_story <- function(base_size = 12) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      plot.title = element_text(size = 16, face = "bold"),
+      plot.subtitle = element_text(size = 12, color = "gray40"),
+      axis.title = element_text(size = 10),
+      axis.text = element_text(size = 9),
+      legend.position = "bottom",
+      plot.margin = margin(15, 15, 15, 15),
+      panel.grid.minor = element_blank()
+    )
+}
+
+# Export settings for high-resolution PNG output
+export_config <- list(
+  dpi = 300,
+  width_px = 1024,
+  height_px = 768,
+  output_dir = "output"
+)
+```
+
+```{r data-loading-functions}
+# --- Data Loading Utility Functions ---
+# These functions implement fail-fast validation for file existence and column presence,
+# plus safe type coercion for columns containing "-" placeholders.
+
+#' Load a CSV file with existence check
+#' @param filename Name of the file to load
+#' @param data_dir Directory containing the file (defaults to script directory)
+#' @return data.frame read from the CSV
+load_file <- function(filename, data_dir = ".") {
+  filepath <- file.path(data_dir, filename)
+  if (!file.exists(filepath)) {
+    stop(paste0("Required data file not found: '", filename, "' - expected at: ", filepath))
+  }
+  read.csv(filepath, stringsAsFactors = FALSE)
+}
+
+#' Validate that required columns exist in a data frame
+#' @param df data.frame to validate
+#' @param required_cols Character vector of required column names
+#' @param dataset_name Human-readable name for error messages
+#' @return TRUE invisibly if valid; stops with error listing missing columns otherwise
+validate_columns <- function(df, required_cols, dataset_name) {
+  missing <- setdiff(required_cols, names(df))
+  if (length(missing) > 0) {
+    stop(paste0("Dataset '", dataset_name, "' is missing required columns: ",
+                paste(missing, collapse = ", ")))
+  }
+  invisible(TRUE)
+}
+
+#' Safely convert character vectors to numeric, treating "-" as NA
+#' @param x Character or numeric vector
+#' @return Numeric vector with "-" values replaced by NA
+safe_as_numeric <- function(x) {
+  x[x == "-"] <- NA
+  suppressWarnings(as.numeric(x))
+}
+```
+
+```{r load-datasets}
+# --- Load and Validate All Four Datasets ---
+# Data directory is the same directory as this Rmd file
+data_dir <- "."
+
+# --- 1. Milwaukee Dataset (49 rows) ---
+milwaukee <- load_file("KiaHyundaiMilwaukeeData.csv", data_dir)
+validate_columns(milwaukee,
+  required_cols = c("month", "year", "countKiaHyundaiThefts", "countOtherThefts"),
+  dataset_name = "Milwaukee"
+)
+cat("Milwaukee dataset loaded:", nrow(milwaukee), "rows,", ncol(milwaukee), "columns\n")
+
+# --- 2. Multi-City Dataset (553 rows) ---
+multi_city <- load_file("kiaHyundaiThefts.csv", data_dir)
+validate_columns(multi_city,
+  required_cols = c("city", "month", "year", "countKiaHyundaiThefts", "countOtherThefts"),
+  dataset_name = "Multi-City"
+)
+cat("Multi-City dataset loaded:", nrow(multi_city), "rows,", ncol(multi_city), "columns\n")
+
+# --- 3. Geographic Dataset (557 rows) ---
+geographic <- load_file("carTheftsMap.csv", data_dir)
+validate_columns(geographic,
+  required_cols = c("agency_ori", "geo_name", "countCarThefts2019", "countCarThefts2020",
+                    "countCarThefts2021", "countCarThefts2022", "latitude", "longitude",
+                    "percentChange2019to2022"),
+  dataset_name = "Geographic"
+)
+cat("Geographic dataset loaded:", nrow(geographic), "rows,", ncol(geographic), "columns\n")
+
+# Apply safe_as_numeric() to numeric columns that may contain "-" placeholders
+numeric_cols_geo <- c("countCarThefts2019", "countCarThefts2020",
+                      "countCarThefts2021", "countCarThefts2022",
+                      "latitude", "longitude", "percentChange2019to2022")
+for (col in numeric_cols_geo) {
+  geographic[[col]] <- safe_as_numeric(geographic[[col]])
+}
+cat("Geographic numeric columns coerced (dash values converted to NA)\n")
+
+# --- 4. VICE Dataset (Excel) ---
+vice <- readxl::read_excel(file.path(data_dir, "Motherboard VICE News Kia Hyundai Theft Data.xlsx"))
+if (nrow(vice) == 0) {
+  warning("VICE dataset loaded but contains zero rows")
+}
+cat("VICE dataset loaded:", nrow(vice), "rows,", ncol(vice), "columns\n")
+
+# Summary of all loaded datasets
+cat("\n--- Data Loading Summary ---\n")
+cat("  Milwaukee:  ", nrow(milwaukee), "rows x", ncol(milwaukee), "cols\n")
+cat("  Multi-City: ", nrow(multi_city), "rows x", ncol(multi_city), "cols\n")
+cat("  Geographic: ", nrow(geographic), "rows x", ncol(geographic), "cols\n")
+cat("  VICE:       ", nrow(vice), "rows x", ncol(vice), "cols\n")
+```
+
+
+```{r data-transformation-timeseries}
+# --- Date Conversion and Time-Series Preparation Functions ---
+# These functions create proper Date columns from month/year and ensure chronological ordering.
+# Validates: Requirements 3.1, 10.4
+
+#' Prepare Milwaukee time-series data with proper Date column and chronological ordering
+#' @param milwaukee_df data.frame with columns: month (abbreviated name), year (integer)
+#' @return data.frame with added 'date' column (Date class, first of month), ordered chronologically
+prepare_milwaukee_timeseries <- function(milwaukee_df) {
+  # Convert abbreviated month name + year to Date (first day of month)
+  # match() against month.abb gives numeric month (1-12)
+  milwaukee_df$date <- as.Date(
+    paste0(milwaukee_df$year, "-", match(milwaukee_df$month, month.abb), "-01")
+  )
+
+  # Order chronologically by date (ascending)
+  milwaukee_df <- milwaukee_df[order(milwaukee_df$date), ]
+
+  # Reset row names after reordering
+
+  rownames(milwaukee_df) <- NULL
+
+  return(milwaukee_df)
+}
+
+#' Prepare Multi-City dataset with Date column and chronological ordering
+#' @param multi_city_df data.frame with columns: city, month (abbreviated name), year (integer)
+#' @return data.frame with added 'date' column (Date class, first of month), ordered by city then date
+prepare_multicity_timeseries <- function(multi_city_df) {
+  # Convert abbreviated month name + year to Date (first day of month)
+  multi_city_df$date <- as.Date(
+    paste0(multi_city_df$year, "-", match(multi_city_df$month, month.abb), "-01")
+  )
+
+  # Order by city (alphabetical) then chronologically by date within each city
+  multi_city_df <- multi_city_df[order(multi_city_df$city, multi_city_df$date), ]
+
+  # Reset row names after reordering
+  rownames(multi_city_df) <- NULL
+
+  return(multi_city_df)
+}
+
+# --- Apply time-series preparation to loaded datasets ---
+milwaukee <- prepare_milwaukee_timeseries(milwaukee)
+cat("Milwaukee: Date column created, ordered chronologically\n")
+cat("  Date range:", format(min(milwaukee$date), "%B %Y"), "to", format(max(milwaukee$date), "%B %Y"), "\n")
+
+multi_city <- prepare_multicity_timeseries(multi_city)
+cat("Multi-City: Date column created, ordered by city then chronologically\n")
+cat("  Date range:", format(min(multi_city$date), "%B %Y"), "to", format(max(multi_city$date), "%B %Y"), "\n")
+cat("  Cities:", length(unique(multi_city$city)), "\n")
+```
+
+```{r data-transformation-aggregation}
+# --- Proportion and Aggregation Transformation Functions ---
+# These functions prepare data for proportion charts, city comparisons,
+# geographic analysis, and national trend visualizations.
+# Validates: Requirements 3.4, 4.1, 4.4, 5.1, 5.2, 5.3
+
+#' Prepare Milwaukee proportion data for pre-spike and peak periods
+#' @param milwaukee_df data.frame with columns: date (Date), countKiaHyundaiThefts, countOtherThefts
+#' @return list with two data.frames: pre_spike (Jan 2019–Sep 2020) and peak (Jan 2021–Dec 2021),
+#'         each containing a computed kia_proportion column
+prepare_milwaukee_proportions <- function(milwaukee_df) {
+  # Define period boundaries
+  pre_spike_start <- as.Date("2019-01-01")
+  pre_spike_end <- as.Date("2020-09-01")
+  peak_start <- as.Date("2021-01-01")
+  peak_end <- as.Date("2021-12-01")
+
+  # Filter to pre-spike period: January 2019 – September 2020
+  pre_spike <- milwaukee_df[milwaukee_df$date >= pre_spike_start &
+                            milwaukee_df$date <= pre_spike_end, ]
+
+  # Filter to peak period: January 2021 – December 2021
+  peak <- milwaukee_df[milwaukee_df$date >= peak_start &
+                       milwaukee_df$date <= peak_end, ]
+
+  # Compute kia_proportion with division-by-zero guard
+  compute_proportion <- function(df) {
+    total <- df$countKiaHyundaiThefts + df$countOtherThefts
+    df$kia_proportion <- ifelse(total > 0, df$countKiaHyundaiThefts / total, 0)
+    df$total_thefts <- total
+    return(df)
+  }
+
+  pre_spike <- compute_proportion(pre_spike)
+  peak <- compute_proportion(peak)
+
+  return(list(pre_spike = pre_spike, peak = peak))
+}
+
+#' Prepare multi-city comparison data aggregated by city for a given year
+#' @param multi_city_df data.frame with columns: city, year, countKiaHyundaiThefts, countOtherThefts
+#' @param year integer year to filter (e.g., 2021 or 2022)
+#' @return data.frame aggregated by city with total_kia, total_other, total_thefts, kia_proportion;
+#'         sorted descending by total_thefts
+prepare_city_comparison <- function(multi_city_df, year) {
+  # Filter to the specified year
+  year_data <- multi_city_df[multi_city_df$year == year, ]
+
+  # Aggregate by city: sum kia and other thefts
+  city_agg <- aggregate(
+    cbind(countKiaHyundaiThefts, countOtherThefts) ~ city,
+    data = year_data,
+    FUN = sum
+  )
+
+  # Rename for clarity
+  names(city_agg) <- c("city", "total_kia", "total_other")
+
+  # Compute total thefts and proportion with division-by-zero guard
+
+  city_agg$total_thefts <- city_agg$total_kia + city_agg$total_other
+  city_agg$kia_proportion <- ifelse(
+    city_agg$total_thefts > 0,
+    city_agg$total_kia / city_agg$total_thefts,
+    0
+  )
+
+  # Sort descending by total thefts
+  city_agg <- city_agg[order(-city_agg$total_thefts), ]
+  rownames(city_agg) <- NULL
+
+  return(city_agg)
+}
+
+#' Prepare geographic data with state extraction and regional grouping
+#' @param geographic_df data.frame with columns: agency_ori, geo_name, countCarThefts2019–2022,
+#'        latitude, longitude, percentChange2019to2022
+#' @return data.frame filtered to valid agencies (non-NA lat/lon), with state and region columns added
+prepare_geographic <- function(geographic_df) {
+  # Filter agencies with valid (non-NA) latitude and longitude
+  geo_valid <- geographic_df[!is.na(geographic_df$latitude) &
+                             !is.na(geographic_df$longitude), ]
+
+  # Extract state from geo_name (typically formatted as "City, ST" or "Agency Name, ST")
+  # Look for a 2-letter state abbreviation after the last comma or space
+  geo_valid$state <- trimws(sub(".*,\\s*", "", geo_valid$geo_name))
+  # If state extraction yields strings longer than 2 chars, try last 2 characters
+
+  geo_valid$state <- ifelse(
+    nchar(geo_valid$state) > 2,
+    toupper(substr(geo_valid$state, nchar(geo_valid$state) - 1, nchar(geo_valid$state))),
+    toupper(geo_valid$state)
+  )
+
+  # Assign U.S. Census regions based on state abbreviation
+  northeast <- c("CT", "ME", "MA", "NH", "RI", "VT", "NJ", "NY", "PA")
+  south <- c("DE", "FL", "GA", "MD", "NC", "SC", "VA", "DC", "WV",
+             "AL", "KY", "MS", "TN", "AR", "LA", "OK", "TX")
+  midwest <- c("IL", "IN", "MI", "OH", "WI", "IA", "KS", "MN", "MO", "NE", "ND", "SD")
+  west <- c("AZ", "CO", "ID", "MT", "NV", "NM", "UT", "WY", "AK", "CA", "HI", "OR", "WA")
+
+  geo_valid$region <- ifelse(geo_valid$state %in% northeast, "Northeast",
+                      ifelse(geo_valid$state %in% south, "South",
+                      ifelse(geo_valid$state %in% midwest, "Midwest",
+                      ifelse(geo_valid$state %in% west, "West", "Other"))))
+
+  rownames(geo_valid) <- NULL
+  return(geo_valid)
+}
+
+#' Prepare national trend data by summing theft counts across valid agencies per year
+#' @param geographic_df data.frame with countCarThefts2019–2022 columns (numeric, may contain NA)
+#' @return data.frame with columns: year (integer) and total (sum of valid agencies for that year)
+prepare_national_trend <- function(geographic_df) {
+  # Sum across all valid (non-NA) agencies per year using na.rm=TRUE
+  trend <- data.frame(
+    year = c(2019, 2020, 2021, 2022),
+    total = c(
+      sum(geographic_df$countCarThefts2019, na.rm = TRUE),
+      sum(geographic_df$countCarThefts2020, na.rm = TRUE),
+      sum(geographic_df$countCarThefts2021, na.rm = TRUE),
+      sum(geographic_df$countCarThefts2022, na.rm = TRUE)
+    )
+  )
+  return(trend)
+}
+
+# --- Apply proportion and aggregation transformations ---
+
+# Milwaukee proportions: pre-spike vs peak
+milwaukee_proportions <- prepare_milwaukee_proportions(milwaukee)
+cat("Milwaukee Proportions:\n")
+cat("  Pre-spike (Jan 2019 – Sep 2020):", nrow(milwaukee_proportions$pre_spike), "months\n")
+cat("    Mean Kia/Hyundai proportion:",
+    round(mean(milwaukee_proportions$pre_spike$kia_proportion), 3), "\n")
+cat("  Peak (Jan 2021 – Dec 2021):", nrow(milwaukee_proportions$peak), "months\n")
+cat("    Mean Kia/Hyundai proportion:",
+    round(mean(milwaukee_proportions$peak$kia_proportion), 3), "\n")
+
+# City comparison for 2022 (peak spread year)
+city_comparison_2022 <- prepare_city_comparison(multi_city, 2022)
+cat("\nCity Comparison (2022) - Top 5 by total thefts:\n")
+print(head(city_comparison_2022, 5))
+
+# City comparison for 2021
+city_comparison_2021 <- prepare_city_comparison(multi_city, 2021)
+cat("\nCity Comparison (2021) - Top 5 by total thefts:\n")
+print(head(city_comparison_2021, 5))
+
+# Geographic data with regions
+geo_prepared <- prepare_geographic(geographic)
+cat("\nGeographic data prepared:", nrow(geo_prepared), "valid agencies\n")
+cat("  States represented:", length(unique(geo_prepared$state)), "\n")
+cat("  Region distribution:\n")
+print(table(geo_prepared$region))
+
+# National trend
+national_trend <- prepare_national_trend(geographic)
+cat("\nNational Theft Trend (sum across valid agencies):\n")
+print(national_trend)
+```
+
+---
+
+## Exploratory Analysis {#exploratory-analysis}
+
+*Following Nathan Yau's "look at your data first" philosophy, this section explores the raw data before building final narrative visualizations. Simple summary stats, quality checks, and quick charts — no polished styling.*
+
+```{r eda-summary-and-quality}
+# --- Summary Statistics ---
+# Using R's built-in summary() for each dataset's theft-count columns
+
+cat("=== Milwaukee Dataset ===\n")
+summary(milwaukee[, c("countKiaHyundaiThefts", "countOtherThefts")])
+
+cat("\n=== Multi-City Dataset ===\n")
+summary(multi_city[, c("countKiaHyundaiThefts", "countOtherThefts")])
+
+cat("\n=== Geographic Dataset ===\n")
+summary(geographic[, c("countCarThefts2019", "countCarThefts2020",
+                       "countCarThefts2021", "countCarThefts2022")])
+
+  # Count duplicate rows
+  dup_count <- sum(duplicated(df))
+
+  data.frame(
+    dataset = dataset_name,
+    na_values = na_count,
+    dash_placeholders = dash_count,
+    duplicate_rows = dup_count,
+    stringsAsFactors = FALSE
+  )
+}
+
+# For geographic, we need to check dash placeholders in the original loaded file
+# because we already converted them to NA. Reload briefly to count dashes.
+geo_raw <- read.csv("carTheftsMap.csv", stringsAsFactors = FALSE)
+
+quality_report <- rbind(
+  quality_audit(milwaukee, "Milwaukee"),
+  quality_audit(multi_city, "Multi-City"),
+  quality_audit(geographic, "Geographic", original_df = geo_raw),
+  quality_audit(as.data.frame(vice), "VICE")
+)
+
+cat("=== DATA QUALITY AUDIT ===\n\n")
+print(quality_report, row.names = FALSE)
+cat("\nNotes:\n")
+cat("  - Geographic dataset '-' values were converted to NA during loading\n")
+cat("  - NA counts for Geographic reflect post-coercion state\n")
+```
+
+```{r eda-yoy-change}
+# --- Year-Over-Year Percentage Change and Absolute Difference ---
+# Validates: Requirement 9.3
+# Compute YoY change for Milwaukee Kia/Hyundai thefts: 2019-2020, 2020-2021, 2021-2022
+
+# Aggregate annual Kia/Hyundai theft totals for Milwaukee
+milwaukee_annual <- aggregate(
+  countKiaHyundaiThefts ~ year,
+  data = milwaukee,
+  FUN = sum
+)
+names(milwaukee_annual) <- c("year", "annual_kia_thefts")
+
+cat("=== YEAR-OVER-YEAR ANALYSIS: Milwaukee Kia/Hyundai Thefts ===\n\n")
+cat("Annual totals:\n")
+print(milwaukee_annual, row.names = FALSE)
+cat("\n")
+
+# Compute YoY percentage change and absolute difference
+# Formula: pct_change = ((new - old) / old) * 100
+# Formula: abs_diff = new - old
+yoy_results <- data.frame(
+  period = character(0),
+  old_value = numeric(0),
+  new_value = numeric(0),
+  abs_difference = numeric(0),
+  pct_change = numeric(0),
+  stringsAsFactors = FALSE
+)
+
+years_available <- sort(milwaukee_annual$year)
+for (i in seq_along(years_available)[-1]) {
+  old_year <- years_available[i - 1]
+  new_year <- years_available[i]
+  old_val <- milwaukee_annual$annual_kia_thefts[milwaukee_annual$year == old_year]
+  new_val <- milwaukee_annual$annual_kia_thefts[milwaukee_annual$year == new_year]
+
+  abs_diff <- new_val - old_val
+  pct_change <- ifelse(old_val > 0, round(((new_val - old_val) / old_val) * 100, 1), NA)
+
+  yoy_results <- rbind(yoy_results, data.frame(
+    period = paste0(old_year, "–", new_year),
+    old_value = old_val,
+    new_value = new_val,
+    abs_difference = abs_diff,
+    pct_change = pct_change,
+    stringsAsFactors = FALSE
+  ))
+}
+
+cat("Year-over-year change (Milwaukee Kia/Hyundai thefts):\n")
+print(yoy_results, row.names = FALSE)
+# Key finding: Massive spike from 2019 to 2020 and 2020 to 2021 confirms the epidemic pattern
+```
+
+```{r eda-histograms, fig.height=8, fig.width=10}
+# --- Distribution Histograms (one per dataset) ---
+# Validates: Requirements 9.2, 9.6
+# Using base R hist() — no custom theme styling
+
+par(mfrow = c(2, 2))
+
+# Histogram 1: Milwaukee - Kia/Hyundai monthly theft counts
+hist(milwaukee$countKiaHyundaiThefts,
+     main = "Milwaukee: Monthly Kia/Hyundai Theft Counts",
+     xlab = "Theft Count", ylab = "Frequency",
+     col = "steelblue", border = "white", breaks = 15)
+
+# Histogram 2: Multi-City - Kia/Hyundai monthly theft counts
+hist(multi_city$countKiaHyundaiThefts,
+     main = "Multi-City: Monthly Kia/Hyundai Theft Counts",
+     xlab = "Theft Count", ylab = "Frequency",
+     col = "coral", border = "white", breaks = 20)
+
+# Histogram 3: Geographic - Total car thefts 2022
+hist(geographic$countCarThefts2022[!is.na(geographic$countCarThefts2022)],
+     main = "Geographic: Agency Car Theft Counts (2022)",
+     xlab = "Theft Count", ylab = "Frequency",
+     col = "darkgreen", border = "white", breaks = 25)
+
+# Histogram 4: VICE - first numeric theft-count column
+if (length(vice_numeric_cols) > 0) {
+  vice_col <- vice_numeric_cols[1]
+  hist(as.numeric(vice[[vice_col]])[!is.na(as.numeric(vice[[vice_col]]))],
+       main = paste0("VICE: ", vice_col, " Distribution"),
+       xlab = vice_col, ylab = "Frequency",
+       col = "purple", border = "white", breaks = 15)
+} else {
+  plot.new()
+  text(0.5, 0.5, "No numeric columns found in VICE dataset", cex = 1.2)
+}
+
+par(mfrow = c(1, 1))
+```
+
+```{r eda-timeseries, fig.height=6, fig.width=10}
+# --- Time-Series Line Plots with Onset and Peak Annotations ---
+# Validates: Requirements 9.2, 9.5, 9.6
+# Annotate with onset (first month > 2× 2019 baseline average) and peak (max theft month)
+
+# --- Milwaukee Time-Series ---
+
+# Compute 2019 baseline average for Kia/Hyundai thefts
+baseline_2019 <- mean(milwaukee$countKiaHyundaiThefts[milwaukee$year == 2019], na.rm = TRUE)
+threshold <- 2 * baseline_2019
+
+# Find onset: first month where thefts exceed 2× baseline
+onset_idx <- which(milwaukee$countKiaHyundaiThefts > threshold)[1]
+onset_date <- milwaukee$date[onset_idx]
+onset_value <- milwaukee$countKiaHyundaiThefts[onset_idx]
+
+# Find peak: month with maximum theft count
+peak_idx <- which.max(milwaukee$countKiaHyundaiThefts)
+peak_date <- milwaukee$date[peak_idx]
+peak_value <- milwaukee$countKiaHyundaiThefts[peak_idx]
+
+cat("=== TURNING POINTS: Milwaukee Kia/Hyundai Thefts ===\n")
+cat("  2019 baseline average:", round(baseline_2019, 1), "thefts/month\n")
+cat("  2× baseline threshold:", round(threshold, 1), "\n")
+cat("  Onset (first month > 2× baseline):", format(onset_date, "%B %Y"),
+    "— value:", onset_value, "\n")
+cat("  Peak (maximum month):", format(peak_date, "%B %Y"),
+    "— value:", peak_value, "\n\n")
+
+# Plot Milwaukee time-series with annotations (base R)
+plot(milwaukee$date, milwaukee$countKiaHyundaiThefts,
+     type = "l", lwd = 2, col = "darkred",
+     main = "Milwaukee Kia/Hyundai Monthly Thefts (2019–2023)\nWith Onset & Peak Annotations",
+     xlab = "Date", ylab = "Monthly Theft Count")
+
+# Add 2× baseline threshold line
+abline(h = threshold, lty = 2, col = "gray50")
+text(min(milwaukee$date), threshold + 10,
+     paste0("2× baseline (", round(threshold, 0), ")"),
+     pos = 4, col = "gray40", cex = 0.8)
+
+# Annotate onset point
+points(onset_date, onset_value, pch = 17, col = "darkorange", cex = 2)
+text(onset_date, onset_value + 30,
+     paste0("ONSET: ", format(onset_date, "%b %Y")),
+     col = "darkorange", cex = 0.9, font = 2)
+
+# Annotate peak point
+points(peak_date, peak_value, pch = 19, col = "red", cex = 2)
+text(peak_date, peak_value - 40,
+     paste0("PEAK: ", format(peak_date, "%b %Y"), " (", peak_value, ")"),
+     col = "red", cex = 0.9, font = 2)
+```
+
+```{r eda-timeseries-multicity, fig.height=6, fig.width=10}
+# --- Multi-City Time-Series (top 3 cities by total thefts) ---
+# Validates: Requirements 9.2, 9.5
+# Using minimal ggplot without custom theme_kia_story()
+
+# Identify top 3 cities by total Kia/Hyundai thefts
+city_totals <- aggregate(countKiaHyundaiThefts ~ city, data = multi_city, FUN = sum)
+city_totals <- city_totals[order(-city_totals$countKiaHyundaiThefts), ]
+top_cities <- head(city_totals$city, 3)
+
+multi_city_top <- multi_city[multi_city$city %in% top_cities, ]
+
+# Compute onset and peak for each top city
+annotations <- data.frame()
+for (city_name in top_cities) {
+  city_data <- multi_city_top[multi_city_top$city == city_name, ]
+  city_baseline <- mean(
+    city_data$countKiaHyundaiThefts[city_data$year == 2019], na.rm = TRUE
+  )
+  city_threshold <- 2 * city_baseline
+
+  # Onset
+  onset_i <- which(city_data$countKiaHyundaiThefts > city_threshold)[1]
+  # Peak
+
+  peak_i <- which.max(city_data$countKiaHyundaiThefts)
+
+  if (!is.na(onset_i)) {
+    annotations <- rbind(annotations, data.frame(
+      city = city_name, type = "Onset",
+      date = city_data$date[onset_i],
+      value = city_data$countKiaHyundaiThefts[onset_i],
+      stringsAsFactors = FALSE
+    ))
+  }
+  annotations <- rbind(annotations, data.frame(
+    city = city_name, type = "Peak",
+    date = city_data$date[peak_i],
+    value = city_data$countKiaHyundaiThefts[peak_i],
+    stringsAsFactors = FALSE
+  ))
+}
+
+# Minimal ggplot time-series (no custom theme)
+ggplot(multi_city_top, aes(x = date, y = countKiaHyundaiThefts, color = city)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(data = annotations, aes(x = date, y = value, shape = type),
+             size = 3, color = "black") +
+  geom_text(data = annotations,
+            aes(x = date, y = value,
+                label = paste0(type, ": ", format(date, "%b %Y"))),
+            vjust = -1, hjust = 0.5, size = 3, color = "black",
+            show.legend = FALSE) +
+  labs(
+    title = "Top 3 Cities: Monthly Kia/Hyundai Thefts with Onset & Peak",
+    subtitle = "Onset = first month exceeding 2× 2019 baseline; Peak = maximum month",
+    x = "Date", y = "Monthly Kia/Hyundai Theft Count",
+    color = "City", shape = "Turning Point"
+  ) +
+  theme_minimal()
+```
+
+---
+
+## Exploratory Analysis {#exploratory-analysis}
+
+*Following Nathan Yau's "look at your data first" philosophy, this section explores the raw data before building final narrative visualizations. Simple summary stats, quality checks, and quick charts — no polished styling.*
+
+```{r eda-summary-and-quality}
+# --- Summary Statistics ---
+# Using R's built-in summary() for each dataset's theft-count columns
+
+cat("=== Milwaukee Dataset ===\n")
+summary(milwaukee[, c("countKiaHyundaiThefts", "countOtherThefts")])
+
+cat("\n=== Multi-City Dataset ===\n")
+summary(multi_city[, c("countKiaHyundaiThefts", "countOtherThefts")])
+
+cat("\n=== Geographic Dataset ===\n")
+summary(geographic[, c("countCarThefts2019", "countCarThefts2020",
+                       "countCarThefts2021", "countCarThefts2022")])
+
+cat("\n=== VICE Dataset ===\n")
+summary(vice)
+
+# --- Data Quality Audit ---
+# Count NAs, dash placeholders, and duplicate rows per dataset
+cat("\n=== Data Quality Audit ===\n")
+cat("Milwaukee   - NAs:", sum(is.na(milwaukee)), "| Duplicates:", sum(duplicated(milwaukee)), "\n")
+cat("Multi-City  - NAs:", sum(is.na(multi_city)), "| Duplicates:", sum(duplicated(multi_city)), "\n")
+cat("Geographic  - NAs:", sum(is.na(geographic)), "| Duplicates:", sum(duplicated(geographic)), "\n")
+cat("VICE        - NAs:", sum(is.na(vice)), "| Duplicates:", sum(duplicated(vice)), "\n")
+
+# Count original "-" placeholders in geographic (before coercion)
+geo_raw <- read.csv(file.path(data_dir, "carTheftsMap.csv"), stringsAsFactors = FALSE)
+dash_count <- sum(geo_raw == "-", na.rm = TRUE)
+cat("Geographic  - Dash placeholders in raw CSV:", dash_count, "\n")
+```
+
+```{r eda-yoy-change}
+# --- Year-Over-Year Change in Milwaukee Kia/Hyundai Thefts ---
+# Formula: pct_change = ((new - old) / old) * 100
+
+mke_yearly <- tapply(milwaukee$countKiaHyundaiThefts, milwaukee$year, sum)
+
+cat("=== Year-Over-Year Change (Milwaukee Kia/Hyundai Thefts) ===\n")
+cat("2019 total:", mke_yearly["2019"], "\n")
+cat("2020 total:", mke_yearly["2020"], "| Change:", mke_yearly["2020"] - mke_yearly["2019"],
+    "(", round((mke_yearly["2020"] - mke_yearly["2019"]) / mke_yearly["2019"] * 100, 1), "%)\n")
+cat("2021 total:", mke_yearly["2021"], "| Change:", mke_yearly["2021"] - mke_yearly["2020"],
+    "(", round((mke_yearly["2021"] - mke_yearly["2020"]) / mke_yearly["2020"] * 100, 1), "%)\n")
+cat("2022 total:", mke_yearly["2022"], "| Change:", mke_yearly["2022"] - mke_yearly["2021"],
+    "(", round((mke_yearly["2022"] - mke_yearly["2021"]) / mke_yearly["2021"] * 100, 1), "%)\n")
+```
+
+```{r eda-exploratory-charts, fig.width=8, fig.height=5}
+# --- Exploratory Chart 1: Milwaukee time-series with turning points (base R) ---
+
+baseline_2019 <- mean(milwaukee$countKiaHyundaiThefts[milwaukee$year == 2019])
+
+plot(milwaukee$date, milwaukee$countKiaHyundaiThefts,
+     type = "l", lwd = 2, col = "red",
+     main = "Milwaukee Kia/Hyundai Thefts Over Time",
+     xlab = "Date", ylab = "Monthly Theft Count")
+
+# 2x baseline threshold line
+abline(h = baseline_2019 * 2, lty = 2, col = "orange")
+
+# Mark onset: first month after 2019 exceeding 2x baseline
+post_2019 <- milwaukee[milwaukee$date > as.Date("2019-12-31"), ]
+onset_idx <- which(post_2019$countKiaHyundaiThefts > baseline_2019 * 2)[1]
+if (!is.na(onset_idx)) {
+  points(post_2019$date[onset_idx], post_2019$countKiaHyundaiThefts[onset_idx],
+         pch = 19, col = "darkorange", cex = 1.5)
+  text(post_2019$date[onset_idx], post_2019$countKiaHyundaiThefts[onset_idx] + 25,
+       paste("Onset:", format(post_2019$date[onset_idx], "%b %Y")), cex = 0.8)
+}
+
+# Mark peak: global maximum
+peak_idx <- which.max(milwaukee$countKiaHyundaiThefts)
+points(milwaukee$date[peak_idx], milwaukee$countKiaHyundaiThefts[peak_idx],
+       pch = 17, col = "darkred", cex = 1.5)
+text(milwaukee$date[peak_idx], milwaukee$countKiaHyundaiThefts[peak_idx] - 25,
+     paste("Peak:", format(milwaukee$date[peak_idx], "%b %Y")), cex = 0.8, pos = 2)
+
+cat("Onset:", format(post_2019$date[onset_idx], "%B %Y"), "\n")
+cat("Peak:", format(milwaukee$date[peak_idx], "%B %Y"),
+    "- Value:", milwaukee$countKiaHyundaiThefts[peak_idx], "\n")
+```
+
+```{r eda-histograms, fig.width=9, fig.height=6}
+# --- Exploratory Chart 2: Histograms (one per dataset) ---
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+
+hist(milwaukee$countKiaHyundaiThefts, breaks = 15, col = "salmon", border = "white",
+     main = "Milwaukee: Monthly Kia/Hyundai Thefts", xlab = "Count")
+
+hist(multi_city$countKiaHyundaiThefts, breaks = 20, col = "lightblue", border = "white",
+     main = "Multi-City: Monthly Kia/Hyundai Thefts", xlab = "Count")
+
+hist(geographic$countCarThefts2022[!is.na(geographic$countCarThefts2022)],
+     breaks = 25, col = "lightgreen", border = "white",
+     main = "Geographic: Agency Thefts 2022", xlab = "Count")
+
+hist(as.numeric(unlist(vice[, sapply(vice, is.numeric)])), breaks = 15,
+     col = "plum", border = "white",
+     main = "VICE: All Numeric Values", xlab = "Value")
+
+par(mfrow = c(1, 1))
+```
+
+```{r eda-multicity-timeseries, fig.width=9, fig.height=5}
+# --- Exploratory Chart 3: Multi-City time-series (minimal ggplot) ---
+
+top5_cities <- multi_city %>%
+  group_by(city) %>%
+  summarise(total = sum(countKiaHyundaiThefts)) %>%
+  arrange(desc(total)) %>%
+  head(5) %>%
+  pull(city)
+
+ggplot(multi_city[multi_city$city %in% top5_cities, ],
+       aes(x = date, y = countKiaHyundaiThefts, color = city)) +
+  geom_line(linewidth = 0.8) +
+  labs(title = "Kia/Hyundai Monthly Thefts - Top 5 Cities",
+       x = "Date", y = "Monthly Theft Count", color = "City") +
+  theme_minimal()
+```
+
+---
+
+## Narrative Framework {#narrative-framework}
+
+*This introductory section defines the audience, purpose, call to action, and delivery medium that guide all subsequent design and content decisions.*
+
+### Target Audience
+
+**City council members and municipal public-safety committee chairs** — elected officials who control local public-safety budgets, can authorize grant programs, and vote on ordinances mandating vehicle-security standards within their jurisdictions. These decision-makers have the authority to fund anti-theft programs, allocate police resources, and enact local legislation requiring immobilizer retrofits or steering-wheel-lock distribution.
+
+### Purpose
+
+**Informational goal:** Demonstrate, through data, that the Kia/Hyundai vehicle theft epidemic — originating in Milwaukee in late 2020 and spreading to at least 13 major U.S. cities by 2022 — represents a quantifiable public-safety crisis driven by a known engineering vulnerability (absence of electronic immobilizers in pre-2022 Kia and Hyundai models).
+
+**Persuasive call to action:** Convince city council members that immediate, data-justified intervention is both necessary and achievable.
+
+### Call to Action
+
+> **Fund a free steering-wheel-lock distribution program for owners of affected 2011–2021 Kia and Hyundai models, and pass an ordinance requiring immobilizer retrofit verification at annual vehicle registration renewal.**
+
+This recommendation targets the defined audience directly: city councils can appropriate funds for lock programs (as Milwaukee, Columbus, and St. Louis have already piloted) and can attach retrofit verification requirements to existing municipal registration processes.
+
+### Delivery Medium
+
+This project is delivered as an **R Markdown report** (`.Rmd` knit to HTML), which combines narrative text, reproducible R code, and embedded static visualizations in a single self-contained document. The HTML output supports interactive table-of-contents navigation, code folding for technical reviewers, and high-resolution chart rendering suitable for print or screen presentation.
+
+---
+
+## Ethical Framework {#ethical-framework}
+
+*This section documents data provenance, transformations, assumptions, risks, and mitigations in the interest of honest, transparent data storytelling.*
+
+### Data Transformations Applied
+
+The following transformations are applied to raw data during preparation:
+
+1. **Non-numeric coercion**: Values of `"-"` in the Geographic dataset's numeric columns (`countCarThefts2019`–`countCarThefts2022`, `percentChange2019to2022`) are converted to `NA` prior to analysis. These represent agencies that did not report data for a given year.
+2. **Date construction**: Month name and year columns in the Milwaukee and Multi-City datasets are converted to `Date` objects (first day of month) to enable chronological ordering.
+3. **Aggregation**: Multi-City theft counts are summed by city and year to produce annual totals for bar chart and treemap visualizations.
+4. **Proportion calculation**: Kia/Hyundai proportion is computed as `countKiaHyundaiThefts / (countKiaHyundaiThefts + countOtherThefts)` for each observation. Division-by-zero is guarded (returns 0 when total is 0).
+5. **Period subsetting**: Milwaukee data is split into pre-spike (January 2019 – September 2020) and peak (January 2021 – December 2021) subsets for proportion comparison charts.
+6. **Geographic filtering**: Agencies with `NA` theft counts for a given year are excluded from national aggregation for that year only; other years for the same agency remain included.
+7. **Descending sort**: Cities in the stacked bar chart are ordered by descending total theft count to facilitate comparison.
+
+### Assumptions
+
+1. **Correlation, not causation**: The temporal coincidence between the "Kia Boyz" TikTok trend emergence (late 2020) and the theft spike is presented as a strong correlation. We do **not** claim the social-media trend is the sole or proven cause; other factors (pandemic-related economic stress, reduced policing during COVID-19, media amplification) may contribute. All causal language in this report uses hedging phrasing such as "associated with," "coinciding with," or "likely contributing factor."
+
+2. **Reporting consistency**: We assume that police departments across the 13 cities in the Multi-City dataset use consistent definitions of "motor vehicle theft" and report incidents to similar standards. In reality, reporting thresholds and clearance-rate practices vary by jurisdiction, which may introduce measurement bias.
+
+3. **Data completeness as proxy for truth**: Agencies represented in the Geographic dataset that report data for all four years are treated as representative of national trends. Agencies with missing years (converted to `NA`) are excluded from aggregation, which may underrepresent regions with less-resourced reporting infrastructure.
+
+### Data Source Citations
+
+| # | Source | Organization | Date Range | Access Method |
+|---|--------|-------------|------------|---------------|
+| 1 | KiaHyundaiMilwaukeeData.csv | Milwaukee Police Department (via academic dataset) | Jan 2019 – Jan 2023 | Direct CSV download from course materials |
+| 2 | kiaHyundaiThefts.csv | Multi-agency compilation (13 U.S. city police departments) | Jan 2019 – Dec 2022 | Direct CSV download from course materials |
+| 3 | carTheftsMap.csv | FBI Uniform Crime Report / National Incident-Based Reporting System (NIBRS) | 2019 – 2022 | Direct CSV download from course materials |
+| 4 | Motherboard VICE News Kia Hyundai Theft Data.xlsx | VICE Media / Motherboard investigative reporting | 2019 – 2022 | Excel file from VICE News FOIA-based dataset, accessed via course materials |
+
+### Identified Risks
+
+1. **Copycat behavior**: Detailed visualization of theft trends, city rankings, and specific vulnerability information (missing immobilizers in pre-2022 models) could inadvertently serve as a guide or inspiration for would-be thieves, particularly if shared on social media without proper context.
+
+2. **Incomplete data misrepresentation**: Presenting aggregated national trends derived from 557 agencies (many with missing years) as representative of all U.S. car theft activity risks overstating the comprehensiveness of the data. Viewers may interpret visualizations as showing "the full picture" when significant geographic and temporal gaps exist.
+
+3. **Stigmatization of vehicle owners**: Highlighting specific makes and models as theft targets could lead to discrimination against Kia/Hyundai owners in insurance pricing, parking access, or neighborhood perception without acknowledging that the vulnerability is an engineering failure, not an owner choice.
+
+### Mitigations
+
+| Risk | Mitigation | Verification |
+|------|-----------|--------------|
+| Copycat behavior | All visualizations include a footer disclaimer: *"This report is intended for policy decision-makers. Data is presented to support public-safety investment, not to provide operational details of theft techniques."* No specific theft methodology steps are described in any caption or annotation. | Inspect chart captions and report footer for disclaimer text. |
+| Incomplete data misrepresentation | Each geographic visualization includes an annotation stating the count of agencies excluded due to missing data (e.g., "N agencies excluded for year X due to non-reporting"). National trend charts include subtitle text: *"Based on agencies with complete reporting for all displayed years."* Hedging language such as "among reporting agencies" qualifies all national-scope claims. | Inspect chart subtitles and annotations for data-limitation language. |
+| Stigmatization of vehicle owners | The narrative framework explicitly frames the problem as a manufacturer engineering deficiency. The call to action targets policymakers and automakers — not vehicle owners — for remediation. Language throughout avoids victim-blaming phrasing. | Review narrative text for framing that attributes responsibility to engineering/policy failures rather than owner behavior. |
+
+---
+
+## Narrative Visualizations {#narrative-viz}
+
+*This section presents the polished, publication-ready visualizations arranged in the five-stage narrative arc defined in the Narrative Framework. Each stage builds on the previous one to guide the viewer from baseline understanding through to a data-supported call to action.*
+
+### Stage 1: Baseline — Pre-2020 Stability
+
+Before the "Kia Boyz" trend emerged, vehicle theft in Milwaukee followed a predictable, relatively low pattern. The chart below establishes the "normal" state of affairs during 2019 — a calm baseline against which the coming explosion will be measured. Notice the modest, stable theft counts month to month with no dramatic spikes or anomalies.
+
+```{r viz-stage1-baseline, fig.width=10, fig.height=7.5}
+# --- Stage 1: Baseline Area Chart ---
+# Shows pre-2020 stable theft levels in Milwaukee to establish the "before" state.
+# Validates: Requirements 2.1, 2.2, 2.3, 2.4, 6.1, 6.5, 8.1
+
+# Filter Milwaukee data to 2019 only (pre-spike baseline year)
+milwaukee_baseline <- milwaukee[milwaukee$year == 2019, ]
+
+# Compute total thefts per month for the area chart
+milwaukee_baseline$total_thefts <- milwaukee_baseline$countKiaHyundaiThefts +
+                                   milwaukee_baseline$countOtherThefts
+
+# Create area chart showing stable, low theft levels in 2019
+ggplot(milwaukee_baseline, aes(x = date, y = total_thefts)) +
+
+  geom_area(fill = kia_palette["Other Thefts"], alpha = 0.7) +
+  geom_line(color = kia_palette["Other Thefts"], linewidth = 0.8) +
+  scale_x_date(
+    date_labels = "%b",
+    date_breaks = "1 month",
+    expand = c(0.01, 0)
+  ) +
+  scale_y_continuous(
+    limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_fill_manual(values = kia_palette) +
+  labs(
+    title = "Milwaukee Vehicle Thefts Were Stable Throughout 2019",
+    subtitle = "Monthly total thefts (Kia/Hyundai + other) before the 'Kia Boyz' trend emerged",
+    x = "Month",
+    y = "Theft Count",
+    caption = "Source: Milwaukee Police Department | Data: KiaHyundaiMilwaukeeData.csv"
+  ) +
+  theme_kia_story() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    plot.subtitle = element_text(size = 12, color = "gray40")
+  )
+```
+
+### Stage 2: Inciting Incident — The "Kia Boyz" TikTok Trend
+
+That calm 2019 baseline was about to shatter. In late 2020, TikTok videos demonstrating how to steal Kia and Hyundai vehicles using a USB cable went viral, spawning the "Kia Boyz" trend. The stacked area chart below reveals the full timeline — watch how the red Kia/Hyundai layer explodes upward after October 2020 while other thefts remain comparatively stable, transforming what was a minor slice of Milwaukee's theft problem into a dominant crisis.
+
+```{r viz-stage2-stacked-area, fig.width=10, fig.height=7.5}
+# --- Stage 2/3: Milwaukee Stacked Area Chart ---
+# Shows countKiaHyundaiThefts and countOtherThefts Jan 2019 – Jan 2023
+# with October 2020 vertical reference line marking "Kia Boyz" trend onset.
+# Validates: Requirements 3.1, 3.2, 3.3, 6.1, 6.4, 8.1, 8.2
+
+# Pivot Milwaukee data to long format for stacked area
+milwaukee_long <- milwaukee %>%
+  select(date, countKiaHyundaiThefts, countOtherThefts) %>%
+  pivot_longer(
+    cols = c(countKiaHyundaiThefts, countOtherThefts),
+    names_to = "category",
+    values_to = "count"
+  ) %>%
+  mutate(
+    category = case_when(
+      category == "countKiaHyundaiThefts" ~ "Kia/Hyundai",
+      category == "countOtherThefts" ~ "Other Thefts"
+    )
+  )
+
+# Set factor level order so Kia/Hyundai stacks on top (rendered last / on top of Other)
+milwaukee_long$category <- factor(milwaukee_long$category,
+                                  levels = c("Other Thefts", "Kia/Hyundai"))
+
+# Define the Kia Boyz trend onset date
+kia_boyz_onset <- as.Date("2020-10-01")
+
+# Render stacked area chart
+ggplot(milwaukee_long, aes(x = date, y = count, fill = category)) +
+  geom_area(position = "stack", alpha = 0.85) +
+  # Vertical reference line at October 2020
+
+  geom_vline(xintercept = as.numeric(kia_boyz_onset),
+             linetype = "dashed", color = "gray30", linewidth = 0.7) +
+  # Text annotation for the onset
+  annotate("text",
+           x = kia_boyz_onset + 15,
+           y = max(milwaukee$countKiaHyundaiThefts + milwaukee$countOtherThefts) * 0.92,
+           label = "Kia Boyz trend\nbegins",
+           hjust = 0, size = 3.8, fontface = "italic", color = "gray20") +
+  scale_fill_manual(values = kia_palette) +
+  scale_x_date(
+    date_labels = "%b %Y",
+    date_breaks = "6 months",
+    expand = c(0.01, 0)
+  ) +
+  scale_y_continuous(
+    limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.05)),
+    labels = scales::comma
+  ) +
+  labs(
+    title = "Milwaukee Vehicle Thefts: The Kia Boyz Explosion",
+    subtitle = "Stacked monthly thefts — Kia/Hyundai (red) vs. other vehicles (blue), Jan 2019 – Jan 2023",
+    x = NULL,
+    y = "Monthly Theft Count",
+    fill = "Category",
+    caption = "Source: Milwaukee Police Department | Dashed line marks October 2020 TikTok trend emergence"
+  ) +
+  theme_kia_story()
+```
+
+
+### Stage 4: National Scope — The Epidemic Spreads
+
+What began as a Milwaukee phenomenon did not stay contained. By 2022, the Kia/Hyundai theft exploit had spread to cities across the country — from St. Louis to Columbus to Denver — revealing that this was no isolated local problem but a national epidemic fueled by social media virality and a shared engineering vulnerability across millions of vehicles.
+
+```{r viz-stage4-stacked-bar, fig.width=10, fig.height=7.5}
+# --- Stage 4: Multi-City Stacked Bar Chart ---
+# Shows 2022 vehicle thefts by city, stacked by Kia/Hyundai vs. Other,
+# sorted descending by total thefts. Includes all cities (≥6), even those with zero Kia thefts.
+# Validates: Requirements 4.1, 4.2, 4.3, 4.4, 4.5, 2.2, 6.1, 8.1
+
+# Pivot city_comparison_2022 to long format for stacking
+city_bar_long <- city_comparison_2022 %>%
+  select(city, total_kia, total_other) %>%
+  pivot_longer(
+    cols = c(total_kia, total_other),
+    names_to = "category",
+    values_to = "count"
+  ) %>%
+  mutate(
+    category = case_when(
+      category == "total_kia" ~ "Kia/Hyundai",
+      category == "total_other" ~ "Other Thefts"
+    )
+  )
+
+# Set factor levels: Other Thefts first (bottom of stack), Kia/Hyundai on top
+city_bar_long$category <- factor(city_bar_long$category,
+                                 levels = c("Other Thefts", "Kia/Hyundai"))
+
+# Reorder city factor by total_thefts descending (for y-axis ordering)
+city_order <- city_comparison_2022$city
+city_bar_long$city <- factor(city_bar_long$city, levels = rev(city_order))
+
+# Render horizontal stacked bar chart
+ggplot(city_bar_long, aes(x = count, y = city, fill = category)) +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = kia_palette) +
+  scale_x_continuous(
+    labels = scales::comma,
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  labs(
+    title = "2022 Vehicle Thefts by City: Kia/Hyundai vs. Other",
+    subtitle = "Cities sorted by total theft count (descending) — red segments show Kia/Hyundai share",
+    x = "Annual Theft Count",
+    y = NULL,
+    fill = "Category",
+    caption = "Source: Multi-city police department data | All cities included regardless of Kia theft count"
+  ) +
+  theme_kia_story() +
+  theme(
+    panel.grid.major.y = element_blank()
+  )
+```
+
+```{r viz-stage4-treemap, fig.width=10, fig.height=7.5}
+# --- Stage 4: City Treemap (Kia/Hyundai Thefts) ---
+# Displays rectangle area proportional to each city's Kia/Hyundai theft count in 2022.
+# Uses base R graphics via treemap package (not ggplot).
+# Validates: Requirements 4.1, 4.2, 4.3, 4.5, 2.2, 6.1, 8.1
+
+# Prepare treemap data — use city_comparison_2022 with total_kia as the size variable
+# Replace zero values with a tiny positive number to ensure all cities appear in treemap
+treemap_data <- city_comparison_2022
+treemap_data$total_kia_display <- ifelse(treemap_data$total_kia == 0, 0.1, treemap_data$total_kia)
+
+# Generate a custom palette with enough colors for all cities
+n_cities <- nrow(treemap_data)
+treemap_colors <- colorRampPalette(c("#E63946", "#F4A261", "#E76F51", "#264653", "#2A9D8F", "#457B9D"))(n_cities)
+
+# Render treemap
+treemap::treemap(
+  treemap_data,
+  index = "city",
+  vSize = "total_kia_display",
+  title = "2022 Kia/Hyundai Thefts: City Proportions (Treemap)",
+  palette = treemap_colors,
+  fontsize.labels = 12,
+  fontsize.title = 14,
+  border.col = "white",
+  border.lwds = 2,
+  aspRatio = 1.5
+)
+```

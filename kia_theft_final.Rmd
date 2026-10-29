@@ -1,0 +1,232 @@
+---
+title: "Kia & Hyundai Theft Crisis: A Data Story"
+author: "K. Sparks"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# install if needed
+for (pkg in c("readxl", "ggplot2", "ggforce", "treemap")) {
+  if (!require(pkg, character.only = TRUE)) install.packages(pkg)
+}
+```
+
+```{r load-data}
+# update these paths to wherever you saved the files
+base_path <- "C:/Users/k_spa/OneDrive/Documents/DSC640/"
+
+kia_thefts <- read.csv(paste0(base_path, "kiaHyundaiThefts.csv"), stringsAsFactors = FALSE)
+car_map    <- read.csv(paste0(base_path, "carTheftsMap.csv"), stringsAsFactors = FALSE)
+milwaukee  <- read.csv(paste0(base_path, "KiaHyundaiMilwaukeeData.csv"), stringsAsFactors = FALSE)
+vice       <- read_excel(paste0(base_path, "Motherboard VICE News Kia Hyundai Theft Data.xlsx"))
+
+# quick sanity checks
+dim(kia_thefts)
+dim(milwaukee)
+str(kia_thefts)
+```
+
+```{r visual1-pie-chart}
+# national-level pie: what share of all thefts are kia/hyundai?
+tot_kia   <- sum(kia_thefts$countKiaHyundaiThefts, na.rm = TRUE)
+tot_other <- sum(kia_thefts$countOtherThefts, na.rm = TRUE)
+
+slices <- c(tot_kia, tot_other)
+lbls   <- c(
+  paste0("Kia/Hyundai\n", round(tot_kia / sum(slices) * 100, 1), "%"),
+  paste0("Other Vehicles\n", round(tot_other / sum(slices) * 100, 1), "%")
+)
+
+par(mar = c(2, 2, 3, 2))
+pie(slices, labels = lbls, col = c("steelblue", "coral"),
+    main = "Visual 1: Share of Vehicle Thefts Nationally",
+    border = "white")
+```
+
+```{r visual2-stacked-bar}
+# aggregate by city
+kia_by_city   <- tapply(kia_thefts$countKiaHyundaiThefts, kia_thefts$city, sum, na.rm = TRUE)
+other_by_city <- tapply(kia_thefts$countOtherThefts, kia_thefts$city, sum, na.rm = TRUE)
+
+cities <- sort(unique(c(names(kia_by_city), names(other_by_city))))
+kia_vec   <- kia_by_city[cities]
+other_vec <- other_by_city[cities]
+kia_vec[is.na(kia_vec)]     <- 0
+other_vec[is.na(other_vec)] <- 0
+
+mat <- rbind("Kia/Hyundai" = kia_vec, "Other" = other_vec)
+
+# sort descending by total
+totals <- colSums(mat)
+mat <- mat[, order(-totals)]
+
+par(mar = c(7, 6, 4, 2))
+bp <- barplot(mat, col = c("steelblue", "coral"), border = "white",
+              main = "Visual 2: Vehicle Thefts by City (Stacked)",
+              ylim = c(0, max(colSums(mat)) * 1.15),
+              xaxt = "n", yaxt = "n")
+axis(2, las = 1)
+title(ylab = "Total Thefts", line = 4)
+
+# angled labels so they dont collide
+text(x = bp, y = -max(colSums(mat)) * 0.04,
+     labels = colnames(mat), srt = 45, adj = 1, xpd = TRUE, cex = 0.85)
+
+legend("topright", legend = c("Kia/Hyundai", "Other"),
+       fill = c("steelblue", "coral"), bty = "n")
+```
+
+```{r visual3-donut}
+# donut chart for national theft breakdown
+df_donut <- data.frame(
+  category = c("Kia/Hyundai", "Other Vehicles"),
+  value    = c(tot_kia, tot_other)
+)
+df_donut$pct <- round(df_donut$value / sum(df_donut$value) * 100, 1)
+df_donut$lbl <- paste0(df_donut$category, " (", df_donut$pct, "%)")
+
+ggplot(df_donut, aes(x = 2, y = value, fill = lbl)) +
+  geom_col(color = "white", linewidth = 1.5, width = 1) +
+  coord_polar(theta = "y") +
+  xlim(0.5, 2.5) +
+  scale_fill_manual(values = c("steelblue", "coral")) +
+  labs(title = "Visual 3: National Theft Proportions (Donut)",
+       fill = "Category") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 13),
+    axis.title = element_blank(),
+    axis.text  = element_blank(),
+    panel.grid = element_blank()
+  )
+```
+
+```{r visual4-area-chart}
+# milwaukee timeline - area chart
+months_order <- c("Jan","Feb","Mar","Apr","May","Jun",
+                  "Jul","Aug","Sep","Oct","Nov","Dec")
+milwaukee$idx <- match(milwaukee$month, months_order) + (milwaukee$year - 2019) * 12
+df <- milwaukee[order(milwaukee$idx), ]
+
+par(mar = c(5, 5, 4, 2))
+plot(df$idx, df$countKiaHyundaiThefts, type = "n",
+     main = "Visual 4: Milwaukee Kia/Hyundai Thefts Over Time",
+     xlab = "Timeline", ylab = "Monthly Thefts",
+     xaxt = "n", las = 1, bty = "l")
+
+# fill area
+polygon(c(df$idx, rev(df$idx)),
+        c(rep(0, nrow(df)), rev(df$countKiaHyundaiThefts)),
+        col = adjustcolor("steelblue", 0.25), border = NA)
+lines(df$idx, df$countKiaHyundaiThefts, col = "steelblue", lwd = 2.5)
+
+# x axis - yearly ticks
+axis(1, at = c(1, 13, 25, 37, 49),
+     labels = c("Jan 2019", "Jan 2020", "Jan 2021", "Jan 2022", "Jan 2023"))
+
+# mark the oct 2020 spike
+abline(v = 22, lty = 2, col = "gray40")
+text(22, max(df$countKiaHyundaiThefts) * 0.85, "Oct 2020\nTrend starts",
+     cex = 0.75, pos = 4)
+```
+
+```{r visual5-stacked-area}
+# stacked area - kia vs other in milwaukee
+# need to back-calculate other thefts from the percentage column
+pct <- df$percentKiaHyundai
+if (max(pct, na.rm = TRUE) > 1) pct <- pct / 100  # handle if stored as whole number
+
+total_est   <- df$countKiaHyundaiThefts / pct
+other_est   <- total_est - df$countKiaHyundaiThefts
+other_est[is.na(other_est) | other_est < 0] <- 0
+
+y_kia   <- df$countKiaHyundaiThefts
+y_total <- y_kia + other_est
+
+par(mar = c(5, 5, 4, 2))
+plot(df$idx, y_total, type = "n", ylim = c(0, max(y_total) * 1.1),
+     main = "Visual 5: Milwaukee Stacked Area (Kia vs Other)",
+     xlab = "Timeline", ylab = "Vehicle Thefts",
+     xaxt = "n", las = 1, bty = "l")
+
+# bottom layer - kia
+polygon(c(df$idx, rev(df$idx)),
+        c(rep(0, nrow(df)), rev(y_kia)),
+        col = adjustcolor("steelblue", 0.5), border = NA)
+
+# top layer - other
+polygon(c(df$idx, rev(df$idx)),
+        c(y_kia, rev(y_total)),
+        col = adjustcolor("coral", 0.35), border = NA)
+
+lines(df$idx, y_kia, col = "steelblue", lwd = 2)
+lines(df$idx, y_total, col = "coral", lwd = 2)
+
+axis(1, at = c(1, 13, 25, 37, 49),
+     labels = c("Jan 2019", "Jan 2020", "Jan 2021", "Jan 2022", "Jan 2023"))
+legend("topleft", legend = c("Kia/Hyundai", "Other"),
+       fill = c(adjustcolor("steelblue", 0.5), adjustcolor("coral", 0.35)),
+       bty = "n")
+```
+
+```{r visual6-treemap}
+# treemap from VICE dataset
+vice_df <- as.data.frame(vice)
+colnames(vice_df) <- make.names(colnames(vice_df))
+vice_df[[3]] <- as.numeric(vice_df[[3]])
+
+city_agg <- aggregate(vice_df[[3]] ~ vice_df[[1]], data = vice_df, FUN = sum, na.rm = TRUE)
+colnames(city_agg) <- c("City", "Thefts")
+city_agg <- subset(city_agg, !is.na(City) & Thefts > 0)
+
+treemap(city_agg,
+        index = "City", vSize = "Thefts",
+        type = "index", palette = "Blues",
+        title = "Visual 6: Theft Distribution by City (Tree Map)")
+```
+
+```{r bonus-grouped-bar}
+# grouped bar for top 10 cities - easier comparison than stacked
+agg_k <- aggregate(countKiaHyundaiThefts ~ city, data = kia_thefts, sum, na.rm = TRUE)
+agg_o <- aggregate(countOtherThefts ~ city, data = kia_thefts, sum, na.rm = TRUE)
+merged <- merge(agg_k, agg_o, by = "city")
+merged$total <- merged$countKiaHyundaiThefts + merged$countOtherThefts
+
+top10 <- head(merged[order(-merged$total), ], 10)
+
+# reshape to long for ggplot
+df_long <- data.frame(
+  city = rep(top10$city, 2),
+  count = c(top10$countKiaHyundaiThefts, top10$countOtherThefts),
+  type = rep(c("Kia/Hyundai", "Other"), each = 10)
+)
+
+ggplot(df_long, aes(x = reorder(city, count), y = count, fill = type)) +
+  geom_col(position = "dodge", width = 0.7, color = "white", linewidth = 0.3) +
+  coord_flip() +
+  scale_fill_manual(values = c("steelblue", "coral")) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Bonus: Side-by-Side Comparison (Top 10 Cities)",
+       x = NULL, y = "Total Thefts", fill = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+    legend.position = "top",
+    panel.grid.major.y = element_blank()
+  )
+```
+
+---
+
+### Executive Summary
+
+**Audience:** Municipal safety planners, city council members, and civic advocacy groups. These are educated professionals familiar with crime statistics at a high level but not data science specialists.
+
+**Purpose & Call to Action:** This presentation demonstrates how a known anti-theft design flaw in Kia and Hyundai vehicles (missing engine immobilizers) created a cascading public safety crisis across U.S. cities beginning in late 2020. The call to action is threefold:
+
+1. Automakers must accelerate steering column lock retrofit programs
+2. Cities should fund targeted anti-theft awareness campaigns in high-theft zip codes
+3. Insurance regulators should require disclosure of immobilizer status at point of sale
+
+**Medium:** R Markdown report (HTML output) with exported PNG charts for integration into slide decks or policy briefs.

@@ -1,0 +1,14 @@
+# R
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# R Markdown render artifacts
+*_cache/
+*_files/
+*.html
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
