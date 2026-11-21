@@ -29,8 +29,9 @@ level — no personally identifiable information):
 | `kiaHyundaiThefts.csv` | Multi-city theft statistics | Compiled from city police department reports |
 | `carTheftsMap.csv` | Geographic agency-level theft data | FBI Uniform Crime Reporting (UCR) |
 
-A fourth dataset referenced in the write-up (VICE/Motherboard FOIA data) informs
-the treemap of theft volume by city.
+The VICE/Motherboard file (`Motherboard VICE News Kia Hyundai Theft Data.xlsx`)
+holds theft counts by city obtained through FOIA requests. It feeds the treemap
+of theft volume by city.
 
 ## The Six Visualizations
 
@@ -62,7 +63,7 @@ follow Gestalt principles and WCAG AA contrast.
 ## Repository Contents
 
 ```
-*.csv                               Public theft datasets (read from the project root)
+*.csv, *.xlsx                       Public theft datasets (read from the project root)
 kia_theft_final.Rmd                 Main R Markdown analysis and visuals
 kia_theft_visualization.Rmd         Visualization-focused R Markdown
 kia_hyundai_theft_eda.R             Exploratory data analysis
@@ -72,12 +73,14 @@ kia_theft_seasonality_story.R       Seasonality / time-series analysis
 docs/                               Story design and ethical-considerations write-up
 ```
 
-The R scripts read the CSV files from the project root. Charts are written to a
-`figures/` folder when the scripts run.
+The R scripts read the data files from the project root. Charts are drawn in the
+R graphics window or in the knitted report; no image files are written.
 
 ## How to Run
 
-Requires R (with `ggplot2` and base graphics). From the project root:
+Requires R and the packages `ggplot2`, `readxl`, `dplyr`, `tidyr`, `treemap`,
+`treemapify`, and `ggforce`, plus `rmarkdown` to knit the reports. From the
+project root:
 
 ```r
 # Render the main analysis

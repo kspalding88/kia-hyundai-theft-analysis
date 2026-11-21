@@ -14,7 +14,7 @@ for (pkg in c("readxl", "ggplot2", "ggforce", "treemap")) {
 
 ```{r load-data}
 # update these paths to wherever you saved the files
-base_path <- "C:/Users/k_spa/OneDrive/Documents/DSC640/"
+base_path <- "./"  # data files sit next to this file in the repository
 
 kia_thefts <- read.csv(paste0(base_path, "kiaHyundaiThefts.csv"), stringsAsFactors = FALSE)
 car_map    <- read.csv(paste0(base_path, "carTheftsMap.csv"), stringsAsFactors = FALSE)
